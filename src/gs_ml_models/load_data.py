@@ -35,11 +35,30 @@ def load_images_grouped_np(
     return result
 
 
-def load_images_grouped_torch(path="data/classification_data") -> list[torch.Tensor]:
-    data = load_images_grouped_np(path)
-    return [torch.from_numpy(d).to("cuda") for d in data]
+def load_images_grouped_torch(
+    path="data/classification_data", verbose=False
+) -> list[torch.Tensor]:
+    data = load_images_grouped_np(path, verbose=verbose)
+    result = []
+    acc = 0
+    total = sum(d.shape[0] for d in data)
+    if verbose:
+        print("Converting images to tensors...")
+
+    first = True
+    for d in data:
+        torch.from_numpy(d).to("cuda")
+        if verbose:
+            acc += d.shape[0]
+            if first:
+                first = False
+                print(f"{acc}/{total}")
+            else:
+                print("\033[1A\033[2K", end="\r")
+                print(f"{acc}/{total}")
+    return result
 
 
-def load_images_torch(path="data/classification_data"):
-    data = load_images_np(path)
+def load_images_torch(path="data/classification_data", verbose=False):
+    data = load_images_np(path, verbose=verbose)
     return torch.from_numpy(data).to("cuda")
