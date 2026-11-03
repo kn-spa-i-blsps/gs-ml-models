@@ -1,6 +1,9 @@
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import torch
+from PIL import Image
 
 # TODO: cpu fallback for pytorch
 
@@ -12,17 +15,24 @@ def load_labels_csv(path="data/splatdata.csv") -> pd.DataFrame:
     return df
 
 
-# TODO: reasonable way to load labels corresponding to images
+def load_images_np(path="data/classification_data", verbose=False) -> np.ndarray:
+    return np.concatenate(load_images_grouped_np(path, verbose=verbose), axis=0)
 
 
-# TODO: impl. Note there should be some reasonable order to the images
-def load_images_np(path="data/classification_data") -> np.ndarray:
-    pass
-
-
-def load_images_grouped_np(path="data/classification_data") -> list[np.ndarray]:
-    """Loads the images into a list of tensors"""
-    return []
+def load_images_grouped_np(
+    path="data/classification_data", verbose=False
+) -> list[np.ndarray]:
+    result = []
+    for dir in sorted(Path(path).iterdir()):
+        if dir.is_dir():
+            acc = []
+            for img in sorted(dir.iterdir()):
+                with Image.open(img) as image:
+                    acc.append(np.array(image))
+            result.append(np.stack(acc))
+            if verbose:
+                print(f"Loaded {len(acc)} images from directory {dir.name}")
+    return result
 
 
 def load_images_grouped_torch(path="data/classification_data") -> list[torch.Tensor]:
