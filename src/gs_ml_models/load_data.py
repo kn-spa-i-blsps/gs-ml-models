@@ -28,15 +28,15 @@ def load_images_grouped_np(
             acc = []
             for img in sorted(dir.iterdir()):
                 with Image.open(img) as image:
-                    acc.append(np.array(image))
-            result.append(np.stack(acc))
+                    acc.append(np.array(image.convert("RGB")))
+            result.append(np.stack(acc).transpose(0, 3, 1, 2))
             if verbose:
                 print(f"Loaded {len(acc)} images from directory {dir.name}")
     return result
 
 
 def load_images_grouped_torch(
-    path="data/classification_data", verbose=False
+    path="data/classification_data", verbose=False, device=TORCH_DEVICE
 ) -> list[torch.Tensor]:
     data = load_images_grouped_np(path, verbose=verbose)
     result = []
@@ -47,7 +47,7 @@ def load_images_grouped_torch(
 
     first = True
     for d in data:
-        result.append(torch.from_numpy(d).to(TORCH_DEVICE))
+        result.append(torch.from_numpy(d).to(device))
         if verbose:
             acc += d.shape[0]
             if first:
@@ -59,6 +59,8 @@ def load_images_grouped_torch(
     return result
 
 
-def load_images_torch(path="data/classification_data", verbose=False):
+def load_images_torch(
+    path="data/classification_data", verbose=False, device=TORCH_DEVICE
+):
     data = load_images_np(path, verbose=verbose)
-    return torch.from_numpy(data).to(TORCH_DEVICE)
+    return torch.from_numpy(data).to(device)
