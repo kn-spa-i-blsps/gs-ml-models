@@ -5,7 +5,7 @@ import pandas as pd
 import torch
 from PIL import Image
 
-# TODO: cpu fallback for pytorch
+from . import TORCH_DEVICE
 
 
 def load_labels_csv(path="data/splatdata.csv") -> pd.DataFrame:
@@ -47,7 +47,7 @@ def load_images_grouped_torch(
 
     first = True
     for d in data:
-        torch.from_numpy(d).to("cuda")
+        torch.from_numpy(d).to(TORCH_DEVICE)
         if verbose:
             acc += d.shape[0]
             if first:
@@ -61,4 +61,4 @@ def load_images_grouped_torch(
 
 def load_images_torch(path="data/classification_data", verbose=False):
     data = load_images_np(path, verbose=verbose)
-    return torch.from_numpy(data).to("cuda")
+    return torch.from_numpy(data).to(TORCH_DEVICE)
