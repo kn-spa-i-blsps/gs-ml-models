@@ -47,7 +47,7 @@ def load_images_grouped_torch(
 
     first = True
     for d in data:
-        torch.from_numpy(d).to(TORCH_DEVICE)
+        result.append(torch.from_numpy(d).to(TORCH_DEVICE))
         if verbose:
             acc += d.shape[0]
             if first:
