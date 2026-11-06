@@ -28,7 +28,9 @@ def load_images_grouped_np(
             acc = []
             for img in sorted(dir.iterdir()):
                 with Image.open(img) as image:
-                    acc.append(np.array(image.convert("RGB")))
+                    acc.append(
+                        np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+                    )
             result.append(np.stack(acc).transpose(0, 3, 1, 2))
             if verbose:
                 print(f"Loaded {len(acc)} images from directory {dir.name}")
