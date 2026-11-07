@@ -24,7 +24,7 @@ from gs_ml_models.load_data import load_labels_csv
 from gs_ml_models.splat_classifiers.simple_mlp.model import SimpleMLPClassifier
 
 
-PROJECT = Path(__file__).resolve().parent.parent
+PROJECT = Path.cwd()
 RESULTS = PROJECT / "results_full"
 
 DATA = next(
@@ -66,7 +66,7 @@ CONFIGS = [
 ]
 
 
-def load_sets(names, n_per_set):
+def load_sets(df, names, n_per_set):
     """Load up to n_per_set random images from each of the given scenes.
 
     The array is allocated once and filled image by image, which avoids the
@@ -122,118 +122,123 @@ def train_model(cfg, seed, X, y):
     return model
 
 
-gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU only"
-print(f"PyTorch {torch.__version__}, device: {gpu_name}")
-if not torch.cuda.is_available():
-    print("WARNING: CUDA is not available, training will be very slow.")
+def main():
+    gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU only"
+    print(f"PyTorch {torch.__version__}, device: {gpu_name}")
+    if not torch.cuda.is_available():
+        print("WARNING: CUDA is not available, training will be very slow.")
 
-df = load_labels_csv(DATA / "splatdata.csv")
-RESULTS.mkdir(exist_ok=True)
+    df = load_labels_csv(DATA / "splatdata.csv")
+    RESULTS.mkdir(exist_ok=True)
 
-print("Loading data...")
-print("train scenes:")
-X_train, y_train = load_sets(TRAIN_SETS, N_PER_SET)
-print("validation scenes:")
-X_val, y_val = load_sets(VAL_SETS, N_PER_SET)
-print("test scenes:")
-X_test, y_test = load_sets(TEST_SETS, N_PER_SET)
-print(f"train: {len(X_train)}, val: {len(X_val)}, test: {len(X_test)} images")
+    print("Loading data...")
+    print("train scenes:")
+    X_train, y_train = load_sets(df, TRAIN_SETS, N_PER_SET)
+    print("validation scenes:")
+    X_val, y_val = load_sets(df, VAL_SETS, N_PER_SET)
+    print("test scenes:")
+    X_test, y_test = load_sets(df, TEST_SETS, N_PER_SET)
+    print(f"train: {len(X_train)}, val: {len(X_val)}, test: {len(X_test)} images")
 
-# Save the settings so the run can be reproduced and described later.
-with open(RESULTS / "run_settings.json", "w") as f:
-    json.dump(
-        {
-            "date": datetime.now().isoformat(timespec="seconds"),
-            "torch": torch.__version__,
-            "device": gpu_name,
-            "data": str(DATA),
-            "train_sets": TRAIN_SETS,
-            "val_sets": VAL_SETS,
-            "test_sets": TEST_SETS,
-            "n_per_set": N_PER_SET,
-            "n_images": {
-                "train": len(X_train),
-                "val": len(X_val),
-                "test": len(X_test),
-            },
-            "epochs": EPOCHS,
-            "batch_size": BATCH_SIZE,
-            "seeds": SEEDS,
-            "configs": CONFIGS,
-        },
-        f,
-        indent=2,
-    )
-
-# Step 1: compare configurations on the validation scenes
-
-search_rows = []
-for cfg_id, cfg in enumerate(CONFIGS):
-    for seed in SEEDS:
-        print(f"\n=== config {cfg_id} {cfg}, seed {seed} ===")
-        start = time.time()
-        model = train_model(cfg, seed, X_train, y_train)
-        search_rows.append(
+    # Save the settings so the run can be reproduced and described later.
+    with open(RESULTS / "run_settings.json", "w") as f:
+        json.dump(
             {
-                "cfg_id": cfg_id,
-                "config": str(cfg),
+                "date": datetime.now().isoformat(timespec="seconds"),
+                "torch": torch.__version__,
+                "device": gpu_name,
+                "data": str(DATA),
+                "train_sets": TRAIN_SETS,
+                "val_sets": VAL_SETS,
+                "test_sets": TEST_SETS,
+                "n_per_set": N_PER_SET,
+                "n_images": {
+                    "train": len(X_train),
+                    "val": len(X_val),
+                    "test": len(X_test),
+                },
+                "epochs": EPOCHS,
+                "batch_size": BATCH_SIZE,
+                "seeds": SEEDS,
+                "configs": CONFIGS,
+            },
+            f,
+            indent=2,
+        )
+
+    # Step 1: compare configurations on the validation scenes
+
+    search_rows = []
+    for cfg_id, cfg in enumerate(CONFIGS):
+        for seed in SEEDS:
+            print(f"\n=== config {cfg_id} {cfg}, seed {seed} ===")
+            start = time.time()
+            model = train_model(cfg, seed, X_train, y_train)
+            search_rows.append(
+                {
+                    "cfg_id": cfg_id,
+                    "config": str(cfg),
+                    "seed": seed,
+                    "train_MAE": evaluate(model.predict(X_train), y_train)["MAE"],
+                    "val_MAE": evaluate(model.predict(X_val), y_val)["MAE"],
+                    "seconds": round(time.time() - start),
+                }
+            )
+            # Save after every run so nothing is lost if the script is interrupted.
+            pd.DataFrame(search_rows).to_csv(RESULTS / "validation_runs.csv", index=False)
+            del model
+            torch.cuda.empty_cache()
+
+    search = pd.DataFrame(search_rows)
+
+    summary = search.groupby(["cfg_id", "config"])[["train_MAE", "val_MAE"]].agg(
+        ["mean", "std"]
+    )
+    summary.to_csv(RESULTS / "validation_summary.csv")
+    print("\nValidation results (mean and std over seeds):")
+    print(summary.round(3))
+
+    val_base = baseline_metrics(y_train, y_val)
+    print("\nValidation baselines (MAE):")
+    print({k: round(float(v["MAE"]), 3) for k, v in val_base.items()})
+
+    best_id = int(search.groupby("cfg_id")["val_MAE"].mean().idxmin())
+    best_cfg = CONFIGS[best_id]
+    print(f"\nBest configuration on validation: {best_cfg}")
+
+    # Step 2: evaluate the best configuration once on the test scenes
+
+    test_rows = []
+    for seed in SEEDS:
+        print(f"\n=== TEST run, seed {seed} ===")
+        model = train_model(best_cfg, seed, X_train, y_train)
+        test_rows.append(
+            {
                 "seed": seed,
                 "train_MAE": evaluate(model.predict(X_train), y_train)["MAE"],
-                "val_MAE": evaluate(model.predict(X_val), y_val)["MAE"],
-                "seconds": round(time.time() - start),
+                **evaluate(model.predict(X_test), y_test),
             }
         )
-        # Save after every run so nothing is lost if the script is interrupted.
-        pd.DataFrame(search_rows).to_csv(RESULTS / "validation_runs.csv", index=False)
+        if seed == SEEDS[0]:
+            model.save(RESULTS / "best_model.pt")
         del model
         torch.cuda.empty_cache()
 
-search = pd.DataFrame(search_rows)
+    test = pd.DataFrame(test_rows)
+    test.to_csv(RESULTS / "test_runs.csv", index=False)
 
-summary = search.groupby(["cfg_id", "config"])[["train_MAE", "val_MAE"]].agg(
-    ["mean", "std"]
-)
-summary.to_csv(RESULTS / "validation_summary.csv")
-print("\nValidation results (mean and std over seeds):")
-print(summary.round(3))
+    test_summary = test.drop(columns="seed").agg(["mean", "std"]).round(3).T
+    test_summary.to_csv(RESULTS / "test_summary.csv")
+    print(f"\nTest results of {best_cfg} (mean and std over seeds):")
+    print(test_summary)
 
-val_base = baseline_metrics(y_train, y_val)
-print("\nValidation baselines (MAE):")
-print({k: round(float(v["MAE"]), 3) for k, v in val_base.items()})
+    test_base = pd.DataFrame(baseline_metrics(y_train, y_test)).round(3)
+    test_base.to_csv(RESULTS / "test_baselines.csv")
+    print("\nTest baselines (constant predictions from the training labels):")
+    print(test_base)
 
-best_id = int(search.groupby("cfg_id")["val_MAE"].mean().idxmin())
-best_cfg = CONFIGS[best_id]
-print(f"\nBest configuration on validation: {best_cfg}")
+    print(f"\nDone. Results saved in {RESULTS}")
 
-# Step 2: evaluate the best configuration once on the test scenes
 
-test_rows = []
-for seed in SEEDS:
-    print(f"\n=== TEST run, seed {seed} ===")
-    model = train_model(best_cfg, seed, X_train, y_train)
-    test_rows.append(
-        {
-            "seed": seed,
-            "train_MAE": evaluate(model.predict(X_train), y_train)["MAE"],
-            **evaluate(model.predict(X_test), y_test),
-        }
-    )
-    if seed == SEEDS[0]:
-        model.save(RESULTS / "best_model.pt")
-    del model
-    torch.cuda.empty_cache()
-
-test = pd.DataFrame(test_rows)
-test.to_csv(RESULTS / "test_runs.csv", index=False)
-
-test_summary = test.drop(columns="seed").agg(["mean", "std"]).round(3).T
-test_summary.to_csv(RESULTS / "test_summary.csv")
-print(f"\nTest results of {best_cfg} (mean and std over seeds):")
-print(test_summary)
-
-test_base = pd.DataFrame(baseline_metrics(y_train, y_test)).round(3)
-test_base.to_csv(RESULTS / "test_baselines.csv")
-print("\nTest baselines (constant predictions from the training labels):")
-print(test_base)
-
-print(f"\nDone. Results saved in {RESULTS}")
+if __name__ == "__main__":
+    main()

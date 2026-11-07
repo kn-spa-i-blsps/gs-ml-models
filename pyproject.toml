@@ -6,13 +6,7 @@ build-backend = "uv_build"
 name = "gs-ml-models"
 version = "0.1.0"
 requires-python = ">=3.10,<3.14"
-dependencies = [
-    "pandas",
-    "matplotlib",
-    "numpy",
-    "torch",
-    "torchvision",
-]
+dependencies = ["pandas", "matplotlib", "numpy", "torch", "torchvision"]
 
-[tool.uv]
-package = false
+[project.scripts]
+evaluate_simple_mlp = "gs_ml_models.splat_classifiers.simple_mlp.evaluate_full:main"
