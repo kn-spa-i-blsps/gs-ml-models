@@ -66,3 +66,25 @@ def load_images_torch(
 ):
     data = load_images_np(path, verbose=verbose)
     return torch.from_numpy(data).to(device)
+
+# Binary labels API
+def load_binary_labels_csv(path="data/binary_labels.csv") -> pd.DataFrame: 
+    return load_labels_csv(path)
+
+def load_binary_images_np(path="data/classification_data", verbose=False) -> np.ndarray:
+    return load_images_np(path, verbose=verbose)
+
+def load_binary_images_grouped_np(
+    path="data/classification_data", verbose=False
+) -> list[np.ndarray]:
+    return load_images_grouped_np(path, verbose=verbose)
+
+def load_binary_images_grouped_torch(
+    path="data/classification_data", verbose=False, device=TORCH_DEVICE
+) -> list[torch.Tensor]:
+    return load_images_grouped_torch(path, verbose=verbose, device=device)
+
+def load_binary_images_torch(
+    path="data/classification_data", verbose=False, device=TORCH_DEVICE
+):
+    return load_images_torch(path, verbose=verbose, device=device)
