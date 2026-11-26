@@ -5,6 +5,11 @@ is the size of the training datasets. Recordings come in other sizes, e.g.
 1920x1080 (16:9). `to_standard_size` converts a batch of images (B, 3, H, W)
 of any size to (B, 3, 480, 640), so it can be passed directly to `predict`.
 
+By default the pixel type is preserved: uint8 (0-255) images stay uint8 and
+float images stay float. Pass `to_float=True` to get float32 in [0, 1], which
+is what `predict` expects.
+
+
 Three modes are available (see `to_standard_size`):
     "crop"    (default) cut a 4:3 window out of the image, then rescale it.
               Nothing is distorted and there are no empty borders, but parts
@@ -84,37 +89,51 @@ def _plan(h, w, size, mode, align) -> _Plan:
     )
 
 
-def _to_float(x: torch.Tensor) -> torch.Tensor:
-    """uint8 images (0-255) become float32 in [0, 1]; floats are kept as they are."""
-    if x.dtype == torch.uint8:
-        return x.to(torch.float32) / 255.0
-    if x.is_floating_point():
-        return x.to(torch.float32)
-    raise TypeError(f"images must be uint8 or floating point, got {x.dtype}")
+def _check_dtype(x: torch.Tensor) -> None:
+    """Only uint8 and floating point images are supported."""
+    if x.dtype != torch.uint8 and not x.is_floating_point():
+        raise TypeError(f"images must be uint8 or floating point, got {x.dtype}")
 
 
-def _apply(chunk: torch.Tensor, plan: _Plan, size, pad_value: float) -> torch.Tensor:
-    """Apply a plan to a chunk of images (n, 3, H, W) -> (n, 3, *size)."""
+def _apply(
+    chunk: torch.Tensor, plan: _Plan, size, pad_value: float, to_float: bool
+) -> torch.Tensor:
+    """Apply a plan to a chunk of images (n, 3, H, W) -> (n, 3, *size).
+
+    The output is float32 if `to_float` is set, otherwise it has the dtype of
+    the input.
+    """
     top, left, ch, cw = plan.crop_top, plan.crop_left, plan.crop_h, plan.crop_w
     # Cut first and convert afterwards, so we never convert pixels we throw away.
-    patch = _to_float(chunk[:, :, top : top + ch, left : left + cw])
+    patch = chunk[:, :, top : top + ch, left : left + cw]
+    out_dtype = torch.float32 if to_float else patch.dtype
+
+    # Resizing is done in float32 (exact for uint8 values 0-255).
+    work = patch.to(torch.float32)
+    if to_float and patch.dtype == torch.uint8:
+        work = work / 255.0  # 0-255 -> [0, 1]
 
     if (ch, cw) != (plan.resize_h, plan.resize_w):
         # Bilinear with antialiasing: averages source pixels when shrinking
         # (1080p -> 480p), so thin lines do not turn into aliasing artefacts.
-        patch = F.interpolate(
-            patch,
+        work = F.interpolate(
+            work,
             size=(plan.resize_h, plan.resize_w),
             mode="bilinear",
             align_corners=False,
             antialias=True,
         )
 
+    if out_dtype == torch.uint8:
+        work = work.round().clamp(0, 255)  # back to valid 8-bit values
+    patch = work.to(out_dtype)
+
     if (plan.resize_h, plan.resize_w) == tuple(size):
         return patch
 
     # "pad" mode: paste the resized image onto a constant-colour canvas.
-    canvas = patch.new_full((patch.shape[0], 3, *size), pad_value)
+    fill = int(round(pad_value)) if out_dtype == torch.uint8 else pad_value
+    canvas = patch.new_full((patch.shape[0], 3, *size), fill)
     canvas[
         :,
         :,
@@ -131,13 +150,13 @@ def to_standard_size(
     size=STANDARD_SIZE,
     pad_value: float = 0.0,
     chunk_size: int = 16,
+    to_float: bool = False,
 ):
     """Convert images of any size to the size the models expect.
 
     Args:
         images: Batch of shape (B, 3, H, W), or a single image (3, H, W).
-            NumPy array or torch tensor. uint8 values (0-255) are scaled to
-            [0, 1]; floating point values are assumed to be in [0, 1] already.
+            NumPy array or torch tensor, uint8 (0-255) or floating point.
             Images from OpenCV / PIL are usually (H, W, 3): convert them first,
             e.g. with `frames.transpose(0, 3, 1, 2)`.
         mode: "crop" (default), "pad" or "stretch", see the module docstring.
@@ -146,15 +165,22 @@ def to_standard_size(
             centred, 0 means top / left, 1 means bottom / right. For example
             `align=(0.5, 0.0)` keeps the left part of a 16:9 frame.
         size: Output (height, width). Defaults to the models' (480, 640).
-        pad_value: Fill value of the borders in "pad" mode.
+        pad_value: Fill value of the borders in "pad" mode, in the units of the
+            output (0-255 for uint8 output, e.g. 0.0 = black in both cases).
         chunk_size: Number of images converted at once. It only limits memory
             use (a 1080p float32 image takes ~25 MB), the result is the same.
+        to_float: If False (default), the pixel type is preserved: uint8 stays
+            uint8 (0-255) and floats keep their dtype and range. If True, the
+            result is float32 and uint8 values are scaled to [0, 1]; floating
+            point inputs are assumed to be in [0, 1] already and are not
+            rescaled. Models expect float32 in [0, 1], so use `to_float=True`
+            for images from a video or from PIL / OpenCV before `predict`.
 
     Returns:
-        float32 array / tensor with values in [0, 1] and shape (B, 3, *size)
-        (or (3, *size) for a single image). The type (NumPy or torch) and the
-        device of the input are preserved. Images that already have the right
-        size are only converted to float32, their pixels are not changed.
+        Array / tensor of shape (B, 3, *size) (or (3, *size) for a single
+        image). The type (NumPy or torch) and the device of the input are
+        preserved. Resized uint8 pixels are rounded to the nearest integer.
+        Images that already have the right size keep their pixel values.
     """
     is_numpy = isinstance(images, np.ndarray)
     if is_numpy:
@@ -174,12 +200,14 @@ def to_standard_size(
     batch, _, h, w = x.shape
     if h == 0 or w == 0:
         raise ValueError(f"images are empty: {tuple(images.shape)}")
+    _check_dtype(x)
 
     plan = _plan(h, w, size, mode, align)  # the same for every image in the batch
-    out = torch.empty((batch, 3, *size), dtype=torch.float32, device=x.device)
+    out_dtype = torch.float32 if to_float else x.dtype
+    out = torch.empty((batch, 3, *size), dtype=out_dtype, device=x.device)
     for start in range(0, batch, chunk_size):
         stop = start + chunk_size
-        out[start:stop] = _apply(x[start:stop], plan, size, pad_value)
+        out[start:stop] = _apply(x[start:stop], plan, size, pad_value, to_float)
 
     if single:
         out = out[0]
